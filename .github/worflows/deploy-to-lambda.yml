@@ -1,0 +1,100 @@
+name: Deploy to existing Lambda
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  NODE_VERSION: 22
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  FUNCTION_ARN: ${{ secrets.FUNCTION_ARN }}
+  # Set to "true" ONCE to update handler/runtime/memory/timeout, then back to "false".
+  UPDATE_CONFIG: "true"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install all dependencies
+        run: npm ci
+
+
+      - name: Install production dependencies only
+        run: |
+          rm -rf node_modules
+          npm ci --omit=dev
+
+      - name: Prepare deploy bundle
+        run: |
+          mkdir -p .deploy
+          cp index.js node_modules package.json package-lock.json .env .deploy/
+          cd .deploy
+          zip -r ../build.zip .
+
+      - name: Check bundle size
+        id: bundle_size
+        run: |
+          SIZE=$(stat -c%s build.zip)
+          SIZE_MB=$((SIZE / 1024 / 1024))
+          echo "Bundle size: ${SIZE_MB}MB (${SIZE} bytes)"
+          if [ $SIZE -gt 51380224 ]; then
+            echo "use_s3=true" >> $GITHUB_OUTPUT
+            echo "Bundle exceeds 49MB, will use S3 upload"
+          else
+            echo "use_s3=false" >> $GITHUB_OUTPUT
+            echo "Bundle is under 49MB, will use direct upload"
+          fi
+
+      - name: Show bundle contents (debug)
+        run: |
+          ls -lah
+          unzip -l build.zip | sed -n '1,40p'
+
+      - name: Configure AWS credentials (access keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Run ONCE with UPDATE_CONFIG="true" to set handler/runtime/timeout/memory
+      - name: Update function configuration (handler/runtime)
+        if: ${{ env.UPDATE_CONFIG == 'true' }}
+        run: |
+          aws lambda update-function-configuration \
+            --function-name "${{ env.FUNCTION_ARN }}" \
+            --runtime nodejs22.x \
+            --handler index.handler \
+            --timeout 29 \
+            --memory-size 1024
+
+      # --- Direct upload (<= 49 MB)
+      - name: Update function code (direct upload)
+        if: ${{ steps.bundle_size.outputs.use_s3 == 'false' }}
+        run: |
+          aws lambda update-function-code \
+            --function-name "${{ env.FUNCTION_ARN }}" \
+            --zip-file "fileb://build.zip"
+
+
+      - name: Show function details
+        run: |
+          echo "=== Function configuration ==="
+          aws lambda get-function-configuration --function-name "${{ env.FUNCTION_ARN }}"
+          echo "=== Code info ==="
+          aws lambda get-function --function-name "${{ env.FUNCTION_ARN }}" \
+            --query 'Configuration.{LastModified:LastModified,Version:Version,CodeSha256:CodeSha256}' --output json
