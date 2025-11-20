@@ -1,7 +1,7 @@
 // index.mjs
 import webpush from "web-push";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { PutCommand, QueryCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { PutCommand, QueryCommand, DeleteCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 
 const client = new DynamoDBClient({});
@@ -173,8 +173,63 @@ export const handler = async (event) => {
     }
 
     // -------- Route: /test-notification --------
-
     if (path.endsWith("/test-notification") && method === "GET") {
+      // Get all subscriptions
+      const scan = new ScanCommand({
+        TableName: TABLE_NAME,
+      });
+
+      const result = await docClient.send(scan);
+
+      if (!result.Items || result.Items.length === 0) {
+        return {
+          statusCode: 404,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: "No subscriptions found",
+          }),
+        };
+      }
+
+      // Send notification to all subscriptions
+      const sendResults = [];
+      for (const item of result.Items) {
+        try {
+          const sendPush = await webpush.sendNotification(
+            item.subscription,
+            JSON.stringify({
+              title: "Test Notification",
+              body: "hello world",
+            })
+          );
+          sendResults.push({ userId: item.userId, deviceId: item.deviceId, status: "sent" });
+        } catch (err) {
+          if (err.statusCode === 410 || err.statusCode === 404) {
+            // Subscription is no longer valid, delete from DynamoDB
+            await docClient.send(
+              new DeleteCommand({
+                TableName: TABLE_NAME,
+                Key: { userId: item.userId, deviceId: item.deviceId },
+              })
+            );
+          }
+          sendResults.push({
+            userId: item.userId,
+            deviceId: item.deviceId,
+            status: "failed",
+            error: err.message,
+          });
+        }
+      }
+
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "Test notifications sent",
+          results: sendResults,
+        }),
+      };
     }
 
     // -------- Default (route not found) --------
