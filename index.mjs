@@ -26,7 +26,7 @@ export const handler = async (event) => {
   try {
     console.log("Incoming Event:", JSON.stringify(event));
 
-    const path = event.rawPath || event.path; // depends on Lambda URL vs API Gateway
+    const path = event.rawPath || event.path || "/"; // depends on Lambda URL vs API Gateway
     const method = event.requestContext?.http?.method || event.httpMethod;
 
     // -------- Route: /vapid --------
