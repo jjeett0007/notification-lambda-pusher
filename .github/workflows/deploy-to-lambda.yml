@@ -71,6 +71,11 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # Wait for any previous updates to complete
+      - name: Wait for function to be active
+        run: |
+          aws lambda wait function-active --function-name "${{ env.FUNCTION_ARN }}"
+
       # Run ONCE with UPDATE_CONFIG="true" to set handler/runtime/timeout/memory
       - name: Update function configuration (handler/runtime)
         if: ${{ env.UPDATE_CONFIG == 'true' }}
