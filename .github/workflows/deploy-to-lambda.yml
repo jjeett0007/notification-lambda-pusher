@@ -87,6 +87,12 @@ jobs:
             --timeout 29 \
             --memory-size 1024
 
+      # Wait for config update to complete
+      - name: Wait for config update
+        if: ${{ env.UPDATE_CONFIG == 'true' }}
+        run: |
+          aws lambda wait function-active --function-name "${{ env.FUNCTION_ARN }}"
+
       # --- Direct upload (<= 49 MB)
       - name: Update function code (direct upload)
         if: ${{ steps.bundle_size.outputs.use_s3 == 'false' }}
