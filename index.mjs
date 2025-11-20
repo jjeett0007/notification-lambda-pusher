@@ -79,6 +79,41 @@ export const handler = async (event) => {
       };
     }
 
+    // -------- Route: /unsubscribe --------
+    if (path.endsWith("/unsubscribe") && method === "POST") {
+      const body = event.body ? JSON.parse(event.body) : {};
+
+      const { userId, deviceId } = body;
+      if (!userId || !deviceId) {
+        return {
+          statusCode: 400,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: "Missing userId or deviceId",
+          }),
+        };
+      }
+
+      // Delete subscription from DynamoDB
+      const command = new DeleteCommand({
+        TableName: TABLE_NAME,
+        Key: {
+          userId,
+          deviceId,
+        },
+      });
+
+      await docClient.send(command);
+
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "Unsubscribed successfully",
+        }),
+      };
+    }
+
     // -------- Route: /notify --------
     if (path.endsWith("/notify") && method === "POST") {
       //   const params = event.queryStringParameters || {};
@@ -228,6 +263,166 @@ export const handler = async (event) => {
         body: JSON.stringify({
           message: "Test notifications sent",
           results: sendResults,
+        }),
+      };
+    }
+
+    // -------- Route: /notify-many ---------
+    if (path.endsWith("/notify-many") && method === "POST") {
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { userIds, message } = body;
+
+      if (!userIds || !Array.isArray(userIds) || userIds.length === 0 || !message) {
+        return {
+          statusCode: 400,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: "Missing userIds array or message in body",
+          }),
+        };
+      }
+
+      const overallResults = [];
+
+      for (const userId of userIds) {
+        // Get all subscriptions for the user
+        const query = new QueryCommand({
+          TableName: TABLE_NAME,
+          KeyConditionExpression: "userId = :uid",
+          ExpressionAttributeValues: {
+            ":uid": userId,
+          },
+        });
+
+        const result = await docClient.send(query);
+
+        if (!result.Items || result.Items.length === 0) {
+          overallResults.push({ userId, error: "No subscriptions found" });
+          continue;
+        }
+
+        // Send notification to all devices
+        const sendResults = [];
+        for (const item of result.Items) {
+          try {
+            const sendPush = await webpush.sendNotification(
+              item.subscription,
+              JSON.stringify({
+                title: "New Message",
+                body: message,
+              })
+            );
+            sendResults.push({ deviceId: item.deviceId, status: "sent" });
+          } catch (err) {
+            if (err.statusCode === 410 || err.statusCode === 404) {
+              // Subscription is no longer valid, delete from DynamoDB
+              await docClient.send(
+                new DeleteCommand({
+                  TableName: TABLE_NAME,
+                  Key: { userId: item.userId, deviceId: item.deviceId },
+                })
+              );
+            }
+            sendResults.push({
+              deviceId: item.deviceId,
+              status: "failed",
+              error: err.message,
+            });
+          }
+        }
+
+        overallResults.push({ userId, results: sendResults });
+      }
+
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "Notifications attempted for multiple users",
+          results: overallResults,
+        }),
+      };
+    }
+
+    // -------- Route: /notify-many-unique ---------
+    if (path.endsWith("/notify-many-unique") && method === "POST") {
+      const body = event.body ? JSON.parse(event.body) : {};
+      const { usersWithUniqueMessageArray } = body;
+
+      if (!usersWithUniqueMessageArray || !Array.isArray(usersWithUniqueMessageArray) || usersWithUniqueMessageArray.length === 0) {
+        return {
+          statusCode: 400,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            error: "Missing or invalid usersWithUniqueMessageArray in body",
+          }),
+        };
+      }
+
+      const overallResults = [];
+
+      for (const userMessage of usersWithUniqueMessageArray) {
+        const { userId, message } = userMessage;
+        if (!userId || !message) {
+          overallResults.push({ userId: userId || "unknown", error: "Missing userId or message in item" });
+          continue;
+        }
+
+        // Get all subscriptions for the user
+        const query = new QueryCommand({
+          TableName: TABLE_NAME,
+          KeyConditionExpression: "userId = :uid",
+          ExpressionAttributeValues: {
+            ":uid": userId,
+          },
+        });
+
+        const result = await docClient.send(query);
+
+        if (!result.Items || result.Items.length === 0) {
+          overallResults.push({ userId, error: "No subscriptions found" });
+          continue;
+        }
+
+        // Send notification to all devices
+        const sendResults = [];
+        for (const item of result.Items) {
+          try {
+            const sendPush = await webpush.sendNotification(
+              item.subscription,
+              JSON.stringify({
+                title: "New Message",
+                body: message,
+              })
+            );
+            sendResults.push({ deviceId: item.deviceId, status: "sent" });
+          } catch (err) {
+            if (err.statusCode === 410 || err.statusCode === 404) {
+              // Subscription is no longer valid, delete from DynamoDB
+              await docClient.send(
+                new DeleteCommand({
+                  TableName: TABLE_NAME,
+                  Key: { userId: item.userId, deviceId: item.deviceId },
+                })
+              );
+            }
+            sendResults.push({
+              deviceId: item.deviceId,
+              status: "failed",
+              error: err.message,
+            });
+          }
+        }
+
+        overallResults.push({ userId, results: sendResults });
+      }
+
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "Notifications attempted for multiple users with unique messages",
+          results: overallResults,
         }),
       };
     }
