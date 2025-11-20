@@ -41,7 +41,7 @@ jobs:
       - name: Prepare deploy bundle
         run: |
           mkdir -p .deploy
-          cp index.js node_modules package.json package-lock.json .env .deploy/
+          cp -r node_modules index.js package.json package-lock.json .env .deploy/
           cd .deploy
           zip -r ../build.zip .
 
